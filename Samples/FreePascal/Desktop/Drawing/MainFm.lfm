@@ -1,0 +1,12 @@
+object MainForm: TMainForm
+  Left = 1596
+  Height = 475
+  Top = 587
+  Width = 640
+  Caption = 'MicroPXL Drawing example'
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  OnResize = FormResize
+  Position = poScreenCenter
+  LCLVersion = '2.2.0.4'
+end
