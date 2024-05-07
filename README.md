@@ -14,6 +14,8 @@ The following peripherals are supported:
 * SPI
 * Software-based serial port using GPIO "bit-banging"
 
+For desktop computers running *Windows* or *Linux*, the library supports **serial port** and **UDP networking**.
+
 The library contains a comprehensive software-based renderer with text and custom fonts, which can be drawn directly on the form, saved to disk, or shown on one of the following displays connected by SPI or I²C:
 * HD44780 standard 16x2 LCD
 * HX8357 graphics 320x480 TFT LCD display
