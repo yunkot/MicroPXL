@@ -15,7 +15,7 @@ unit PXL.DirectInput.Joystick;
 interface
 
 uses
-  DirectInput, SysUtils, PXL.DirectInput.Types;
+  DirectInput, SysUtils, Messages, PXL.DirectInput.Types;
 
 type
   EDirectInputJoystick = class(EDirectInput);
@@ -79,10 +79,15 @@ type
     FBackground: Boolean;
 
     FJoysticks: TArray<TDirectInputJoystick>;
+    FNotifyWindow: THandle;
+    FDeviceNotify: Pointer;
+    FDevicesChanged: Boolean;
 
     function GetCount: Integer; inline;
     function GetItem(const AIndex: Integer): TDirectInputJoystick; inline;
     procedure ReleaseJoysticks;
+    procedure RecreateJoysticks;
+    procedure DeviceNotify(var AMessage: TMessage);
   protected
     function AddJoystick: TDirectInputJoystick;
   public
@@ -126,11 +131,12 @@ resourcestring
   SFailedPollingDIJoystick = 'Failed polling DirectInput joystick device';
   SCouldNotReadDIJoystickState = 'Could not read DirectInput joystick state';
   SFailedEnumeratingDIJoysticks = 'Failed enumerating DirectInput joysticks';
+  SCouldNotRegisterForDeviceNotification = 'Could not register to receive device notifications';
 
 implementation
 
 uses
-  Windows;
+  Windows, Classes;
 
 type
   PUserReference = ^TUserReference;
@@ -138,6 +144,21 @@ type
     Data: TObject;
     Success: Boolean;
   end;
+
+  TDevBroadcastDeviceInterface = record
+    dbcc_size: DWORD;
+    dbcc_devicetype: DWORD;
+    dbcc_reserved: DWORD;
+    dbcc_classguid: TGUID;
+    dbcc_name: PChar;
+  end;
+
+const
+  DBT_DEVTYP_DEVICEINTERFACE = $00000005;
+  DBT_DEVNODES_CHANGED = $0007;
+  DBT_DEVICEARRIVAL = $8000;
+  DBT_DEVICEREMOVECOMPLETE = $8004;
+  DEVICE_NOTIFY_ALL_INTERFACE_CLASSES = $00000004;
 
 function AxisEnumCallback(var AInstance: TDIDeviceObjectInstance; ARef: Pointer): Boolean; stdcall;
 var
@@ -312,6 +333,30 @@ begin
   SetLength(FJoysticks, 0);
 end;
 
+procedure TDirectInputJoysticks.RecreateJoysticks;
+var
+  LRef: TUserReference;
+begin
+  try
+    LRef.Data := Self;
+    LRef.Success := True;
+
+    if (not Succeeded(TDirectInputTypes.DirectInput.EnumDevices(DI8DEVCLASS_GAMECTRL, @JoyEnumCallback,
+      @LRef, DIEDFL_ATTACHEDONLY))) or (not LRef.Success) then
+      raise EDirectInputJoystick.Create(SFailedEnumeratingDIJoysticks);
+  except
+    ReleaseJoysticks;
+    raise;
+  end;
+end;
+
+procedure TDirectInputJoysticks.DeviceNotify(var AMessage: TMessage);
+begin
+  if (AMessage.WParam = DBT_DEVNODES_CHANGED) or (AMessage.WParam = DBT_DEVICEARRIVAL) or
+    (AMessage.WParam = DBT_DEVICEREMOVECOMPLETE) then
+    FDevicesChanged := True;
+end;
+
 function TDirectInputJoysticks.AddJoystick: TDirectInputJoystick;
 var
   LIndex: Integer;
@@ -326,7 +371,7 @@ end;
 
 procedure TDirectInputJoysticks.Initialize;
 var
-  LRef: TUserReference;
+  LFilter: TDevBroadcastDeviceInterface;
 begin
   if FInitialized then
     Exit; // Already initialized.
@@ -334,16 +379,30 @@ begin
   if FWindowHandle = 0 then
     raise EDirectInputJoystick.Create(SWindowHandleRequiredForDIJoystick);
 
+  FNotifyWindow := AllocateHWND(DeviceNotify);
+
+  FillChar(LFilter, SizeOf(TDevBroadcastDeviceInterface), 0);
+  LFilter.dbcc_size := SizeOf(TDevBroadcastDeviceInterface);
+  LFilter.dbcc_devicetype := DBT_DEVTYP_DEVICEINTERFACE;
+
+  FDeviceNotify := RegisterDeviceNotification(FNotifyWindow, @LFilter,
+    DEVICE_NOTIFY_WINDOW_HANDLE or DEVICE_NOTIFY_ALL_INTERFACE_CLASSES);
+
+  if FDeviceNotify = nil then
+  begin
+    DeallocateHWnd(FNotifyWindow);
+    raise EDirectInputJoystick.Create(SCouldNotRegisterForDeviceNotification);
+  end;
+
   TDirectInputTypes.AcquireDirectInput;
   try
-    LRef.Data := Self;
-    LRef.Success := True;
-
-    if (not Succeeded(TDirectInputTypes.DirectInput.EnumDevices(DI8DEVCLASS_GAMECTRL, @JoyEnumCallback,
-      @LRef, DIEDFL_ATTACHEDONLY))) or (not LRef.Success) then
-      raise EDirectInputJoystick.Create(SFailedEnumeratingDIJoysticks);
+    RecreateJoysticks;
   except
-    ReleaseJoysticks;
+    if FDeviceNotify <> nil then
+    begin
+      UnregisterDeviceNotification(FDeviceNotify);
+      FDeviceNotify := nil;
+    end;
     TDirectInputTypes.ReleaseDirectInput;
     raise;
   end;
@@ -354,6 +413,17 @@ end;
 procedure TDirectInputJoysticks.Finalize;
 begin
   ReleaseJoysticks;
+
+  if FDeviceNotify <> nil then
+  begin
+    UnregisterDeviceNotification(FDeviceNotify);
+    FDeviceNotify := nil;
+  end;
+  if FNotifyWindow <> 0 then
+  begin
+    DeallocateHWnd(FNotifyWindow);
+    FNotifyWindow := 0;
+  end;
   FInitialized := False;
 end;
 
@@ -362,6 +432,13 @@ var
   LJoystick: TDirectInputJoystick;
 begin
   Result := True;
+
+  if FDevicesChanged then
+  begin
+    FDevicesChanged := False;
+    ReleaseJoysticks;
+    RecreateJoysticks;
+  end;
 
   for LJoystick in FJoysticks do
     Result := LJoystick.Update and Result;
